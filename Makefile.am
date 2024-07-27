@@ -105,6 +105,8 @@ cpuminer_SOURCES = \
   algo/tribus.c \
   algo/veltor.c \
   algo/x11evo.c \
+  algo/x7g.c \
+  algo/x7.c \
   algo/x11.c \
   algo/x12.c \
   algo/x13.c \

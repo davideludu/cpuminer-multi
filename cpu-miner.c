@@ -129,6 +129,7 @@ enum algos {
 	ALGO_VANILLA,     /* Vanilla (Blake256 8-rounds - double sha256) */
 	ALGO_VELTOR,      /* Skein Shavite Shabal Streebog */
 	ALGO_X11EVO,      /* Permuted X11 */
+        ALGO_X7,
 	ALGO_X11,         /* X11 */
 	ALGO_X12,
 	ALGO_X13,         /* X13 */
@@ -201,6 +202,7 @@ static const char *algo_names[] = {
 	"vanilla",
 	"veltor",
 	"x11evo",
+        "x7",
 	"x11",
 	"x12",
 	"x13",
@@ -370,6 +372,7 @@ Options:\n\
                           timetravel   Timetravel (Machinecoin)\n\
                           vanilla      Blake-256 8-rounds\n\
                           x11evo       Permuted x11\n\
+                          x7          X7\n\
                           x11          X11\n\
                           x12          X12\n\
                           x13          X13\n\
@@ -769,7 +772,7 @@ static bool get_mininginfo(CURL *curl, struct work *work)
 	return true;
 }
 
-#define BLOCK_VERSION_CURRENT 3
+#define BLOCK_VERSION_CURRENT 4
 
 static bool gbt_work_decode(const json_t *val, struct work *work)
 {
@@ -870,110 +873,114 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 	}
 
 	/* build coinbase transaction */
-	tmp = json_object_get(val, "coinbasetxn");
-	if (tmp) {
-		const char *cbtx_hex = json_string_value(json_object_get(tmp, "data"));
-		cbtx_size = cbtx_hex ? (int) strlen(cbtx_hex) / 2 : 0;
-		cbtx = (uchar*) malloc(cbtx_size + 100);
-		if (cbtx_size < 60 || !hex2bin(cbtx, cbtx_hex, cbtx_size)) {
-			applog(LOG_ERR, "JSON invalid coinbasetxn");
-			goto out;
-		}
-	} else {
-		int64_t cbvalue;
-		if (!pk_script_size) {
-			if (allow_getwork) {
-				applog(LOG_INFO, "No payout address provided, switching to getwork");
-				have_gbt = false;
-			} else
-				applog(LOG_ERR, "No payout address provided");
-			goto out;
-		}
-		tmp = json_object_get(val, "coinbasevalue");
-		if (!tmp || !json_is_number(tmp)) {
-			applog(LOG_ERR, "JSON invalid coinbasevalue");
-			goto out;
-		}
-		cbvalue = (int64_t) (json_is_integer(tmp) ? json_integer_value(tmp) : json_number_value(tmp));
-		cbtx = (uchar*) malloc(256);
-		le32enc((uint32_t *)cbtx, 1); /* version */
-		cbtx[4] = 1; /* in-counter */
-		memset(cbtx+5, 0x00, 32); /* prev txout hash */
-		le32enc((uint32_t *)(cbtx+37), 0xffffffff); /* prev txout index */
-		cbtx_size = 43;
-		/* BIP 34: height in coinbase */
-		for (n = work->height; n; n >>= 8)
-			cbtx[cbtx_size++] = n & 0xff;
-                /* If the last byte pushed is >= 0x80, then we need to add
-                   another zero byte to signal that the block height is a
-                   positive number.  */
-                if (cbtx[cbtx_size - 1] & 0x80)
-                        cbtx[cbtx_size++] = 0;
-		cbtx[42] = cbtx_size - 43;
-		cbtx[41] = cbtx_size - 42; /* scriptsig length */
-		le32enc((uint32_t *)(cbtx+cbtx_size), 0xffffffff); /* sequence */
-		cbtx_size += 4;
-		cbtx[cbtx_size++] = 1; /* out-counter */
-		le32enc((uint32_t *)(cbtx+cbtx_size), (uint32_t)cbvalue); /* value */
-		le32enc((uint32_t *)(cbtx+cbtx_size+4), cbvalue >> 32);
-		cbtx_size += 8;
-		cbtx[cbtx_size++] = (uint8_t) pk_script_size; /* txout-script length */
-		memcpy(cbtx+cbtx_size, pk_script, pk_script_size);
-		cbtx_size += (int) pk_script_size;
-		le32enc((uint32_t *)(cbtx+cbtx_size), 0); /* lock time */
-		cbtx_size += 4;
-		coinbase_append = true;
-	}
-	if (coinbase_append) {
-		unsigned char xsig[100];
-		int xsig_len = 0;
-		if (*coinbase_sig) {
-			n = (int) strlen(coinbase_sig);
-			if (cbtx[41] + xsig_len + n <= 100) {
-				memcpy(xsig+xsig_len, coinbase_sig, n);
-				xsig_len += n;
-			} else {
-				applog(LOG_WARNING, "Signature does not fit in coinbase, skipping");
-			}
-		}
-		tmp = json_object_get(val, "coinbaseaux");
-		if (tmp && json_is_object(tmp)) {
-			void *iter = json_object_iter(tmp);
-			while (iter) {
-				unsigned char buf[100];
-				const char *s = json_string_value(json_object_iter_value(iter));
-				n = s ? (int) (strlen(s) / 2) : 0;
-				if (!s || n > 100 || !hex2bin(buf, s, n)) {
-					applog(LOG_ERR, "JSON invalid coinbaseaux");
-					break;
-				}
-				if (cbtx[41] + xsig_len + n <= 100) {
-					memcpy(xsig+xsig_len, buf, n);
-					xsig_len += n;
-				}
-				iter = json_object_iter_next(tmp, iter);
-			}
-		}
-		if (xsig_len) {
-			unsigned char *ssig_end = cbtx + 42 + cbtx[41];
-			int push_len = cbtx[41] + xsig_len < 76 ? 1 :
-			               cbtx[41] + 2 + xsig_len > 100 ? 0 : 2;
-			n = xsig_len + push_len;
-			memmove(ssig_end + n, ssig_end, cbtx_size - 42 - cbtx[41]);
-			cbtx[41] += n;
-			if (push_len == 2)
-				*(ssig_end++) = 0x4c; /* OP_PUSHDATA1 */
-			if (push_len)
-				*(ssig_end++) = xsig_len;
-			memcpy(ssig_end, xsig, xsig_len);
-			cbtx_size += n;
-		}
-	}
+            // Build coinbase transaction
+/* build coinbase transaction */
+tmp = json_object_get(val, "coinbasetxn");
+if (tmp) {
+    const char *cbtx_hex = json_string_value(json_object_get(tmp, "data"));
+    cbtx_size = cbtx_hex ? (int) strlen(cbtx_hex) / 2 : 0;
+    cbtx = (uchar*) malloc(cbtx_size + 100);
+    if (cbtx_size < 60 || !hex2bin(cbtx, cbtx_hex, cbtx_size)) {
+        applog(LOG_ERR, "JSON invalid coinbasetxn");
+        goto out;
+    }
+} else {
+    int64_t cbvalue;
+    if (!pk_script_size) {
+        if (allow_getwork) {
+            applog(LOG_INFO, "No payout address provided, switching to getwork");
+            have_gbt = false;
+        } else {
+            applog(LOG_ERR, "No payout address provided");
+        }
+        goto out;
+    }
+    tmp = json_object_get(val, "coinbasevalue");
+    if (!tmp || !json_is_number(tmp)) {
+        applog(LOG_ERR, "JSON invalid coinbasevalue");
+        goto out;
+    }
+    cbvalue = (int64_t) (json_is_integer(tmp) ? json_integer_value(tmp) : json_number_value(tmp));
+    cbtx = (uchar*) malloc(256);
+    le32enc((uint32_t *)cbtx, 1); /* version */
+    cbtx[4] = 1; /* in-counter */
+    memset(cbtx + 5, 0x00, 32); /* prev txout hash */
+    le32enc((uint32_t *)(cbtx + 37), 0xffffffff); /* prev txout index */
+    cbtx_size = 43;
+    /* BIP 34: height in coinbase */
+    for (n = work->height; n; n >>= 8)
+        cbtx[cbtx_size++] = n & 0xff;
+    /* If the last byte pushed is >= 0x80, then we need to add
+       another zero byte to signal that the block height is a
+       positive number.  */
+    if (cbtx[cbtx_size - 1] & 0x80)
+        cbtx[cbtx_size++] = 0;
+    cbtx[42] = cbtx_size - 43;
+    cbtx[41] = cbtx_size - 42; /* scriptsig length */
+    le32enc((uint32_t *)(cbtx + cbtx_size), 0xffffffff); /* sequence */
+    cbtx_size += 4;
+    cbtx[cbtx_size++] = 1; /* out-counter */
+    le32enc((uint32_t *)(cbtx + cbtx_size), (uint32_t)cbvalue); /* value */
+    le32enc((uint32_t *)(cbtx + cbtx_size + 4), cbvalue >> 32);
+    cbtx_size += 8;
+    cbtx[cbtx_size++] = (uint8_t) pk_script_size; /* txout-script length */
+    memcpy(cbtx + cbtx_size, pk_script, pk_script_size);
+    cbtx_size += (int) pk_script_size;
+    le32enc((uint32_t *)(cbtx + cbtx_size), 0); /* lock time */
+    cbtx_size += 4;
+    coinbase_append = true;
+}
+if (coinbase_append) {
+    unsigned char xsig[100];
+    int xsig_len = 0;
+    if (*coinbase_sig) {
+        n = (int) strlen(coinbase_sig);
+        if (cbtx[41] + xsig_len + n <= 100) {
+            memcpy(xsig + xsig_len, coinbase_sig, n);
+            xsig_len += n;
+        } else {
+            applog(LOG_WARNING, "Signature does not fit in coinbase, skipping");
+        }
+    }
+    tmp = json_object_get(val, "coinbaseaux");
+    if (tmp && json_is_object(tmp)) {
+        void *iter = json_object_iter(tmp);
+        while (iter) {
+            unsigned char buf[100];
+            const char *s = json_string_value(json_object_iter_value(iter));
+            n = s ? (int) (strlen(s) / 2) : 0;
+            if (!s || n > 100 || !hex2bin(buf, s, n)) {
+                applog(LOG_ERR, "JSON invalid coinbaseaux");
+                break;
+            }
+            if (cbtx[41] + xsig_len + n <= 100) {
+                memcpy(xsig + xsig_len, buf, n);
+                xsig_len += n;
+            }
+            iter = json_object_iter_next(tmp, iter);
+        }
+    }
+    if (xsig_len) {
+        unsigned char *ssig_end = cbtx + 42 + cbtx[41];
+        int push_len = cbtx[41] + xsig_len < 76 ? 1 :
+                       cbtx[41] + 2 + xsig_len > 100 ? 0 : 2;
+        n = xsig_len + push_len;
+        memmove(ssig_end + n, ssig_end, cbtx_size - (ssig_end - cbtx));
+        cbtx[41] += n;
+        if (push_len == 2)
+            *(ssig_end++) = 0x4c; /* OP_PUSHDATA1 */
+        if (push_len)
+            *(ssig_end++) = xsig_len;
+        memcpy(ssig_end, xsig, xsig_len);
+        cbtx_size += n;
+    }
+}
 
-	n = varint_encode(txc_vi, 1 + tx_count);
-	work->txs = (char*) malloc(2 * (n + cbtx_size + tx_size) + 1);
-	bin2hex(work->txs, txc_vi, n);
-	bin2hex(work->txs + 2*n, cbtx, cbtx_size);
+n = varint_encode(txc_vi, 1 + tx_count);
+work->txs = (char*) malloc(2 * (n + cbtx_size + tx_size) + 1);
+bin2hex(work->txs, txc_vi, n);
+bin2hex(work->txs + 2 * n, cbtx, cbtx_size);
+
 
 	/* generate merkle root */
 	merkle_tree = (uchar(*)[32]) calloc(((1 + tx_count + 1) & ~1), 32);
@@ -1249,11 +1256,12 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 
 		val = json_rpc_call(curl, rpc_url, rpc_userpass, req, NULL, 0);
 		free(req);
+/*
 		if (unlikely(!val)) {
 			applog(LOG_ERR, "submit_upstream_work json_rpc_call failed");
 			goto out;
 		}
-
+*/
 		res = json_object_get(val, "result");
 		if (json_is_object(res)) {
 			char *res_str;
@@ -1306,10 +1314,10 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 
 			/* issue JSON-RPC request */
 			val = json_rpc2_call(curl, rpc_url, rpc_userpass, s, NULL, 0);
-			if (unlikely(!val)) {
+			/*if (unlikely(!val)) {
 				applog(LOG_ERR, "submit_upstream_work json_rpc_call failed");
 				goto out;
-			}
+			}*/
 			res = json_object_get(val, "result");
 			json_t *status = json_object_get(res, "status");
 			bool valid = !strcmp(status ? json_string_value(status) : "", "OK");
@@ -1379,17 +1387,22 @@ out:
 	return rc;
 }
 
+/* JSON request for getwork */
 static const char *getwork_req =
-	"{\"method\": \"getwork\", \"params\": [], \"id\":0}\r\n";
+    "{\"method\": \"getwork\", \"params\": [], \"id\":0}\r\n";
 
+/* Define capabilities for getblocktemplate requests */
 #define GBT_CAPABILITIES "[\"coinbasetxn\", \"coinbasevalue\", \"longpoll\", \"workid\"]"
 
+/* JSON request for getblocktemplate */
 static const char *gbt_req =
-	"{\"method\": \"getblocktemplate\", \"params\": [{\"capabilities\": "
-	GBT_CAPABILITIES "}], \"id\":0}\r\n";
+    "{\"method\": \"getblocktemplate\", \"params\": [{\"capabilities\": "
+    GBT_CAPABILITIES "}], \"id\":0}\r\n";
+
+/* JSON request for getblocktemplate with longpollid */
 static const char *gbt_lp_req =
-	"{\"method\": \"getblocktemplate\", \"params\": [{\"capabilities\": "
-	GBT_CAPABILITIES ", \"longpollid\": \"%s\"}], \"id\":0}\r\n";
+    "{\"method\": \"getblocktemplate\", \"params\": [{\"capabilities\": "
+    GBT_CAPABILITIES ", \"longpollid\": \"%s\"}], \"id\":0}\r\n";
 
 static bool get_upstream_work(CURL *curl, struct work *work)
 {
@@ -2235,6 +2248,9 @@ static void *miner_thread(void *userdata)
 			case ALGO_X14:
 				max64 = 0x3ffff;
 				break;
+                        case ALGO_X7:
+                                max64 = 0x1ffff;
+
 			case ALGO_LBRY:
 			case ALGO_SONOA:
 			case ALGO_TRIBUS:
@@ -2434,6 +2450,9 @@ static void *miner_thread(void *userdata)
 		case ALGO_X11EVO:
 			rc = scanhash_x11evo(thr_id, &work, max_nonce, &hashes_done);
 			break;
+                case ALGO_X7:
+                        rc = scanhash_x7(thr_id, &work, max_nonce, &hashes_done);
+                        break;
 		case ALGO_X11:
 			rc = scanhash_x11(thr_id, &work, max_nonce, &hashes_done);
 			break;

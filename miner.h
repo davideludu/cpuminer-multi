@@ -252,6 +252,7 @@ int scanhash_tribus(int thr_id, struct work *work, uint32_t max_nonce, uint64_t 
 int scanhash_veltor(int thr_id, struct work *work, uint32_t max_nonce, uint64_t *hashes_done);
 int scanhash_x11evo(int thr_id, struct work *work, uint32_t max_nonce, uint64_t *hashes_done);
 int scanhash_x11(int thr_id, struct work *work, uint32_t max_nonce, uint64_t *hashes_done);
+int scanhash_x7(int thr_id, struct work *work, uint32_t max_nonce, uint64_t *hashes_done);
 int scanhash_x12(int thr_id, struct work *work, uint32_t max_nonce, uint64_t *hashes_done);
 int scanhash_x13(int thr_id, struct work *work, uint32_t max_nonce, uint64_t *hashes_done);
 int scanhash_x14(int thr_id, struct work *work, uint32_t max_nonce, uint64_t *hashes_done);
@@ -399,6 +400,16 @@ void cpu_getname(char *outbuf, size_t maxsz);
 void cpu_getmodelid(char *outbuf, size_t maxsz);
 float cpu_temp(int core);
 
+struct BlockHeader {
+    uint32_t time;
+    uint32_t nVersion;
+    uint32_t hashPrevBlock;
+    uint32_t hashMerkleRoot;
+    uint32_t nTime;
+    uint32_t nBits;
+    uint32_t nNonce;
+};
+
 struct work {
 	uint32_t data[48];
 	uint32_t target[8];
@@ -407,7 +418,7 @@ struct work {
 	double shareratio;
 	double sharediff;
 	uint32_t resnonce;
-
+    struct BlockHeader header;
 	int height;
 	char *txs;
 	char *workid;
@@ -553,6 +564,9 @@ void tribus_hash(void *output, const void *input);
 void veltor_hash(void *output, const void *input);
 void xevan_hash(void *output, const void *input);
 void x11evo_hash(void *output, const void *input);
+//void x7hash(void *output, const void *input, uint64_t timestamp);
+//void x7hash(uint32_t *hash, const uint32_t *data, uint64_t timestamp);
+void x7hash(void *output, const void *input, uint64_t timestamp);
 void x11hash(void *output, const void *input);
 void x12hash(void *output, const void *input);
 void x13hash(void *output, const void *input);

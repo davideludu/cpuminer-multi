@@ -585,10 +585,10 @@ json_t *json_rpc_call(CURL *curl, const char *url,
 		}
 		else
 			s = strdup("(unknown reason)");
-
+/*
 		if (!curl_err || opt_debug)
 			applog(LOG_ERR, "JSON-RPC call failed: %s", s);
-
+*/
 		free(s);
 
 		goto err_out;
@@ -1313,9 +1313,9 @@ start:
 			free(s);
 			if (err_val)
 				s = json_dumps(err_val, JSON_INDENT(3));
-			else
-				s = strdup("(unknown reason)");
-			applog(LOG_ERR, "JSON-RPC call failed: %s", s);
+			//else
+		//		s = strdup("(unknown reason)");
+		///	applog(LOG_ERR, "JSON-RPC call failed: %s", s);
 		}
 		goto out;
 	}
@@ -2480,6 +2480,9 @@ void print_hash_tests(void)
 
 	xevan_hash(&hash[0], &buf[0]);
 	printpfx("xevan", hash);
+
+        x11hash(&hash[0], &buf[0]);
+        printpfx("x7", hash);
 
 	x11evo_hash(&hash[0], &buf[0]);
 	printpfx("x11evo", hash);
